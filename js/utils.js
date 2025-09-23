@@ -1,39 +1,39 @@
 // utils.js
 
-// Centralized export
-export {
-    // --- AJAX  ---
-    loadPartial,
+export const AJAX = {
     fetchWithCSRF,
     safeFetch,
+};
 
-    // --- Form helpers ---
+export const Forms = {
     formValidate,
     validateInputRegex,
     passwordStrengthRegex,
     togglePasswordVisibility,
     serializeForm,
+    disableForm,
+};
 
-    // --- Cookies ---
+export const Cookies = {
     getCookie,
     getCSRFToken,
     isCSRFTokenAvailable,
+};
 
-    // --- URL & Query Params ---
+export const URLUtils = {
     getQueryParam,
     setQueryParam,
     removeQueryParam,
     getCurrentUrl,
     setCurrentUrl,
     shareLinkSocialMedia,
+};
 
-    // --- UI Helpers ---
-    addFontAwesomeLoader,
+export const UI = {
     preserveScrollPos,
     scrollToTop,
     scrollToElementById,
     scrollToBottom,
-    disableForm,
     setCurrentDateTime,
     setElementLocked,
     toggleClass,
@@ -41,61 +41,88 @@ export {
     hideElement,
     copyElementText,
     printSection,
+};
 
-    // time and date
+export const Time = {
     nowTimestamp,
+};
 
-    // --- DOM Helpers ---
+export const DOM = {
     domIsReady,
     waitForDomReady,
+};
+
+export const Utils = {
     debounce,
+    throttle,
+    generateId,
+    deepClone,
 };
 
 
 
-async function loadPartial(url, targetSelector) {
-    const response = await fetchWithCSRF(url);
-    const html = await response.text();
-    const target = document.querySelector(targetSelector);
-    if (target) target.innerHTML = html;
-}
+/*========================================================= functions ==================================================*/
 
-async function safeFetch(url, options = {}) {
+async function safeFetch(url, options = {}, { autoJSON = true, retries = 0, timeout = 0 } = {}) {
     /*
-        Description : a custom fetch that auto handles errors and parsing
-        Usage:
-            const [error, data] = await safeFetch('/api/some-endpoint');
-            if (error) {
-            console.error('Request failed:', error.status, error.message);
-            } else {
-            console.log('Data received:', data);
-            }
+    * safeFetch(url, options = {}, { retries = 0, timeout = 0, autoJSON = true })
+    * 
+    * - Auto JSON parsing (falls back to text if not JSON)
+    * - Throws on non-OK responses (returns Error with err.status & err.data)
+    * - Optional retries + timeout (AbortController)
+    * - Returns [err, data] instead of try/catch
+    *
+    * Example:
+    * const [err, data] = await safeFetch('/api/items', { method: 'POST', body: { name: 'Test' } }, { retries: 3, timeout: 5000 });
+    * if (err) console.warn(`Error ${err.status}:`, err.data);
     */
-    try {
-        const response = await fetch(url, options);
 
-        // auto-parse JSON (like axios)
-        let data;
-        const contentType = response.headers.get("content-type");
-        if (contentType && contentType.includes("application/json")) {
-            data = await response.json();
-        } else {
-            data = await response.text(); // fallback to text for non-JSON
+    const controller = new AbortController();
+    const id = timeout ? setTimeout(() => controller.abort(), timeout) : null;
+
+    const opts = {
+        ...options,
+        signal: controller.signal,
+        headers: {
+            Accept: "application/json",
+            ...(options.headers || {}),
+        },
+    };
+
+    if (autoJSON && opts.body && typeof opts.body === "object" && !(opts.body instanceof FormData)) {
+        opts.headers["Content-Type"] = "application/json";
+        opts.body = JSON.stringify(opts.body);
+    }
+
+    let attempts = 0;
+    while (attempts <= retries) {
+        try {
+            const response = await fetch(url, opts);
+            clearTimeout(id);
+
+            const contentType = response.headers.get("content-type");
+            let data = contentType?.includes("application/json")
+                ? await response.json()
+                : await response.text();
+
+            if (!response.ok) {
+                const error = new Error(`HTTP ${response.status}: ${response.statusText}`);
+                error.status = response.status;
+                error.data = data;
+                throw error;
+            }
+
+            return [null, data];
+        } catch (err) {
+            if (attempts < retries) {
+                attempts++;
+                continue; // retry
+            }
+            return [err, null];
         }
-
-        if (!response.ok) {
-            // Build an error object
-            const error = new Error(`HTTP ${response.status}: ${response.statusText}`);
-            error.status = response.status;
-            error.data = data;
-            throw error;
-        }
-
-        return [null, data];
-    } catch (err) {
-        return [err, null];
     }
 }
+
 
 
 function disableForm(form, state = true) {
@@ -118,26 +145,42 @@ function hideElement(elementId) {
 }
 
 
-function copyElementText(elementId) {
+async function copyElementText(elementId) {
     const el = document.getElementById(elementId);
     if (!el) {
         console.error(`Element with ID "${elementId}" not found.`);
-        return;
+        return false;
     }
+
     const text = el.textContent || el.innerText;
     if (!text) {
         console.error(`Element with ID "${elementId}" has no text content to copy.`);
-        return;
-    } else {
-        return text;
+        return false;
+    }
+
+    try {
+        await navigator.clipboard.writeText(text);
+        return true;
+    } catch (err) {
+        console.error('Failed to copy text: ', err);
+        return false;
     }
 }
 
-function debounce(fn, delay) {
+
+function debounce(func, wait, immediate = false) {
     let timeout;
-    return function (...args) {
+    return function executedFunction(...args) {
+        const later = () => {
+            timeout = null;
+            if (!immediate) func.apply(this, args);
+        };
+
+        const callNow = immediate && !timeout;
         clearTimeout(timeout);
-        timeout = setTimeout(() => fn.apply(this, args), delay);
+        timeout = setTimeout(later, wait);
+
+        if (callNow) func.apply(this, args);
     };
 }
 
@@ -404,53 +447,42 @@ function getCookie(name) {
 }
 
 
-function getCSRFToken() {
-    //fetch CSRF token from the hidden input or meta tag
-    const input = document.querySelector('[name=csrfmiddlewaretoken]');
-    if (input && input.value) {
-        return input.value;
-    }
+const getCSRFToken = (() => {
+    let cachedToken = null;
+    return () => {
+        if (cachedToken) return cachedToken;
 
-    const meta = document.querySelector('meta[name="csrf-token"]');
-    return meta ? meta.getAttribute('content') : null;
-}
+        const input = document.querySelector('[name=csrfmiddlewaretoken]');
+        if (input?.value) {
+            cachedToken = input.value;
+            return cachedToken;
+        }
+
+        const meta = document.querySelector('meta[name="csrf-token"]');
+        cachedToken = meta ? meta.getAttribute('content') : null;
+        return cachedToken;
+    };
+})();
 
 
 
 
 async function fetchWithCSRF(url, options = {}) {
     const csrfToken = getCSRFToken();
+    const headers = {
+        "X-CSRFToken": csrfToken,
+        ...(options.headers || {}),
+    };
 
-    options.method = options.method || 'POST';
-    options.headers = options.headers || {};
-
-    // Add CSRF token
-    if (!options.headers['X-CSRFToken']) {
-        options.headers['X-CSRFToken'] = csrfToken;
-    }
-
-    // Handle JSON body conversion
-    if (options.body && typeof options.body === 'object' && !(options.body instanceof FormData)) {
-        options.headers['Content-Type'] = 'application/json';
-        options.body = JSON.stringify(options.body);
-    }
-
-    try {
-        const res = await fetch(url, options);
-        if (!res.ok) {
-            throw new Error(`HTTP error! status: ${res.status}`);
-        }
-
-        const contentType = res.headers.get('Content-Type');
-        if (contentType && contentType.includes('application/json')) {
-            return await res.json();
-        } else {
-            return await res.text();
-        }
-    } catch (error) {
-        console.error('Fetch error:', error);
-        throw error;
-    }
+    return safeFetch(
+        url,
+        {
+            ...options,
+            headers,
+            method: options.method || "POST",
+        },
+        { autoJSON: true }
+    );
 }
 
 
@@ -513,34 +545,6 @@ function setCurrentUrl(url) {
 
 
 
-function addFontAwesomeLoader(elementId, loading = true, text = 'Loading...', { size = '24px', color = '#000' } = {}) {
-    const element = document.getElementById(elementId);
-    if (!element) {
-        console.warn(`Element with ID "${elementId}" not found.`);
-        return;
-    }
-
-    const iconElement = document.createElement('i');
-    iconElement.className = 'fa fa-spinner fa-spin';
-    iconElement.style.fontSize = size;
-    iconElement.style.color = color;
-
-    if (!loading) {
-        element_og_content = element.textContent; // Preserve original content
-        element.textContent = ''; // Clear existing content
-        element.textContent = text; // Set default loading text
-        // Append the icon to the element
-        element.appendChild(iconElement);
-    } else {
-        // Remove the icon and restore original content
-        element.textContent = element_og_content || ''; // Restore original content if available
-        if (iconElement.parentNode === element) {
-            element.removeChild(iconElement);
-        }
-    }
-
-
-}
 
 function isCSRFTokenAvailable() {
     return !!getCSRFToken() || !!getCookie('csrftoken');
@@ -682,3 +686,31 @@ function printSection({ sectionSelector, hideSelectors = [], watermarkSelector =
 }
 
 
+// Throttle function
+function throttle(func, limit) {
+    let inThrottle;
+    return function (...args) {
+        if (!inThrottle) {
+            func.apply(this, args);
+            inThrottle = true;
+            setTimeout(() => inThrottle = false, limit);
+        }
+    };
+}
+
+
+function deepClone(obj) {
+    // in case structuredClone might not be supported
+    if (typeof structuredClone === "function") {
+        return structuredClone(obj);
+    }
+    return JSON.parse(JSON.stringify(obj));
+}
+
+function generateId(prefix = '') {
+    return prefix + Math.random().toString(36).slice(2, 11);
+}
+
+function wait(ms) {
+    return new Promise(resolve => setTimeout(resolve, ms));
+}
