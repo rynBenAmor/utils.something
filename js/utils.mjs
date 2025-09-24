@@ -18,22 +18,16 @@ export const Cookies = {
     getCookie,
     getCSRFToken,
     isCSRFTokenAvailable,
+    StorageHelpers,
 };
 
 export const URLUtils = {
-    getQueryParam,
-    setQueryParam,
-    removeQueryParam,
-    getCurrentUrl,
-    setCurrentUrl,
+    URLHelpers,
     shareLinkSocialMedia,
 };
 
 export const UI = {
-    preserveScrollPos,
-    scrollToTop,
-    scrollToElementById,
-    scrollToBottom,
+    ScrollHelpers,
     setCurrentDateTime,
     setElementLocked,
     toggleClass,
@@ -50,6 +44,7 @@ export const Time = {
 export const DOM = {
     domIsReady,
     waitForDomReady,
+    safeGetElementById,
 };
 
 export const Utils = {
@@ -57,12 +52,22 @@ export const Utils = {
     throttle,
     generateId,
     deepClone,
+    wait
 };
 
 
 
 /*========================================================= functions ==================================================*/
-
+/**
+ * Safe fetch wrapper with retry logic and timeout
+ * @param {string} url - The URL to fetch
+ * @param {RequestInit} options - Fetch options
+ * @param {Object} config - Configuration object
+ * @param {boolean} config.autoJSON - Auto parse JSON response
+ * @param {number} config.retries - Number of retry attempts
+ * @param {number} config.timeout - Request timeout in ms
+ * @returns {Promise<[Error|null, any]>} Tuple of error and data
+ */
 async function safeFetch(url, options = {}, { autoJSON = true, retries = 0, timeout = 0 } = {}) {
     /*
     * safeFetch(url, options = {}, { retries = 0, timeout = 0, autoJSON = true })
@@ -132,9 +137,14 @@ function disableForm(form, state = true) {
 
 
 function toggleClass(elementId, className) {
-    const el = document.getElementById(elementId);
-    if (el) el.classList.toggle(className);
+    try {
+        const el = document.getElementById(elementId);
+        el.classList.toggle(className);
+    } catch (error) {
+        console.error(error.message);
+    }
 }
+
 function showElement(elementId) {
     const el = document.getElementById(elementId);
     if (el) el.style.display = '';
@@ -168,19 +178,38 @@ async function copyElementText(elementId) {
 }
 
 
-function debounce(func, wait, immediate = false) {
-    let timeout;
-    return function executedFunction(...args) {
-        const later = () => {
-            timeout = null;
-            if (!immediate) func.apply(this, args);
-        };
 
-        const callNow = immediate && !timeout;
-        clearTimeout(timeout);
-        timeout = setTimeout(later, wait);
+function debounce(func, wait, options = {}) {
+    const { immediate = false, maxWait } = options;
+    let timeoutId, lastCallTime, result;
 
-        if (callNow) func.apply(this, args);
+    const later = (context, args) => {
+        const timeSinceLastCall = Date.now() - lastCallTime;
+
+        if (maxWait && timeSinceLastCall < maxWait) {
+            timeoutId = setTimeout(() => later(context, args), wait);
+        } else {
+            timeoutId = null;
+            if (!immediate) result = func.apply(context, args);
+        }
+    };
+
+    return function debounced(...args) {
+        const context = this;
+        const callNow = immediate && !timeoutId;
+
+        clearTimeout(timeoutId);
+        lastCallTime = Date.now();
+
+        if (callNow) {
+            result = func.apply(context, args);
+        } else if (!timeoutId && maxWait) {
+            timeoutId = setTimeout(() => later(context, args), wait);
+        } else {
+            timeoutId = setTimeout(() => later(context, args), wait);
+        }
+
+        return result;
     };
 }
 
@@ -239,83 +268,83 @@ function waitForDomReady() {
     });
 }
 
-function setElementLocked(elementId, is_disabled) {
-    const el = document.getElementById(elementId);
+function setElementLocked(el, isDisabled = true) {
     if (!el) {
-        console.warn(`Element with ID "${elementId}" not found.`);
-        return;
+        console.warn("[setElementLocked] Target element not found.");
+        return null; // return null to signal no action
     }
 
-    const alreadyLocked = el.getAttribute('data-locked') === 'true';
+    const isAlreadyDisabled = el.hasAttribute("disabled");
 
-    if (is_disabled) {
-        if (alreadyLocked) return true; // ! It's already locked
-        el.setAttribute('disabled', 'true');
-        el.setAttribute('data-locked', 'true');
-        el.classList.add('is-locked');
-        el.style.pointerEvents = 'none';
-        el.style.opacity = 0.6;
-        return false; // ! Just locked now
+    if (isDisabled) {
+        if (isAlreadyDisabled) return true; // ! already locked
+        el.setAttribute("disabled", "true");
+        el.classList.add("is-locked");
+        return false; // ! just locked now
     } else {
-        // * element is unlocked
-        el.removeAttribute('disabled');
-        el.removeAttribute('data-locked');
-        el.classList.remove('is-locked');
-        el.style.pointerEvents = 'auto';
-        el.style.opacity = 1;
-        return false;
+        el.removeAttribute("disabled");
+        el.classList.remove("is-locked");
+        return true; //  * just unlocked now
     }
 }
 
 
 
-
-
-function setCurrentDateTime(elementId, format = 'YYYY-MM-DD HH:mm:ss', mode = 'text') {
-    const element = document.getElementById(elementId);
-    if (!element) {
-        console.error(`Element with ID "${elementId}" not found.`);
-        return;
+function setCurrentDateTime(el, format = 'YYYY-MM-DD HH:mm:ss', mode = 'text') {
+    if (!el) {
+        console.warn("[setCurrentDateTime] Target element not found.");
+        return null;
     }
 
     const now = new Date();
 
-    // Custom date formatter (simple fallback)
-    function formatDate(date, format) {
-        const pad = (n) => String(n).padStart(2, '0');
-        return format
-            .replace('YYYY', date.getFullYear())
-            .replace('MM', pad(date.getMonth() + 1))
-            .replace('DD', pad(date.getDate()))
-            .replace('HH', pad(date.getHours()))
-            .replace('mm', pad(date.getMinutes()))
-            .replace('ss', pad(date.getSeconds()));
-    }
+    // Lightweight formatter
+    const pad = (n) => String(n).padStart(2, '0');
+    const formattedDate = format
+        .replace('YYYY', now.getFullYear())
+        .replace('MM', pad(now.getMonth() + 1))
+        .replace('DD', pad(now.getDate()))
+        .replace('HH', pad(now.getHours()))
+        .replace('mm', pad(now.getMinutes()))
+        .replace('ss', pad(now.getSeconds()));
 
-    const formattedDate = formatDate(now, format);
     const isoString = now.toISOString();
     const readable = now.toLocaleString('en-US', {
-        year: 'numeric', month: 'short', day: 'numeric',
-        hour: '2-digit', minute: '2-digit', second: '2-digit',
+        year: 'numeric',
+        month: 'short',
+        day: 'numeric',
+        hour: '2-digit',
+        minute: '2-digit',
+        second: '2-digit',
         hour12: false
     });
 
-    // Set content based on mode
-    if (mode === 'text') {
-        element.textContent = formattedDate;
-    } else if (mode === 'value') {
-        element.value = formattedDate;
-    } else {
-        element.textContent = formattedDate;
-        element.value = formattedDate;
+    // Apply mode safely
+    switch (mode) {
+        case 'text':
+            el.textContent = formattedDate;
+            break;
+        case 'value':
+            if ('value' in el) el.value = formattedDate;
+            else console.warn('[setCurrentDateTime] Element does not support value property.');
+            break;
+        case 'both':
+            el.textContent = formattedDate;
+            if ('value' in el) el.value = formattedDate;
+            break;
+        default:
+            console.warn(`[setCurrentDateTime] Unknown mode "${mode}", defaulting to text.`);
+            el.textContent = formattedDate;
     }
 
-    element.setAttribute('datetime', isoString);
-    element.setAttribute('data-format', format);
-    element.setAttribute('title', readable);
-    element.classList.add('current-datetime');
-}
+    // Set attributes for semantic info
+    el.setAttribute('datetime', isoString);
+    el.setAttribute('data-format', format);
+    el.setAttribute('title', readable);
+    el.classList.add('current-datetime');
 
+    return formattedDate;
+}
 
 
 
@@ -361,52 +390,51 @@ function passwordStrengthRegex(password, regex) {
 }
 
 
-function togglePasswordVisibility(inputId, toggleButtonId) {
-    const input = document.getElementById(inputId);
-    const toggleButton = document.getElementById(toggleButtonId);
+function togglePasswordVisibility(inputEl, togglerEl) {
 
-    if (!input || !toggleButton) {
-        console.error('Invalid input or toggle button ID provided.');
+    if (!inputEl || !toggleButtonEl) {
+        console.error('[togglePasswordVisibility] Target elements not found.');
         return;
     }
 
-    toggleButton.addEventListener('click', function () {
-        if (input.type === 'password') {
-            input.type = 'text';
-            toggleButton.innerHTML = "<i class='fa fa-eye'></i>";
+    togglerEl.addEventListener('click', function () {
+        if (inputEl.type === 'password') {
+            inputEl.type = 'text';
+            togglerEl.innerHTML = "<i class='fa fa-eye'></i>";
         } else {
-            input.type = 'password';
-            toggleButton.innerHTML = "<i class='fa fa-eye-slash'></i>";
+            inputEl.type = 'password';
+            togglerEl.innerHTML = "<i class='fa fa-eye-slash'></i>";
         }
     });
 }
 
 
-function nowTimestamp({ includeDate = false } = {}) {
+function nowTimestamp({ includeDate = false, format = null } = {}) {
     const now = new Date();
+    const pad = (n) => String(n).padStart(2, '0');
 
-    const pad = (n) => n.toString().padStart(2, '0');
+    if (format) {
+        return format
+            .replace('YYYY', now.getFullYear())
+            .replace('MM', pad(now.getMonth() + 1))
+            .replace('DD', pad(now.getDate()))
+            .replace('HH', pad(now.getHours()))
+            .replace('mm', pad(now.getMinutes()))
+            .replace('ss', pad(now.getSeconds()));
+    }
 
-    const hours = pad(now.getHours());
-    const minutes = pad(now.getMinutes());
-
-    const time = `${hours}:${minutes}`;
-
+    // Default behavior
+    const time = `${pad(now.getHours())}:${pad(now.getMinutes())}`;
     if (!includeDate) return time;
 
-    const day = pad(now.getDate());
-    const month = pad(now.getMonth() + 1); // Months are 0-based
-    const year = now.getFullYear();
-
-    const date = `${day}/${month}/${year}`;
-
+    const date = `${pad(now.getDate())}/${pad(now.getMonth() + 1)}/${now.getFullYear()}`;
     return `${date} ${time}`;
 }
 
 
 
-function validateInputRegex(input, regex) {
-    if (!input || !(input instanceof HTMLInputElement)) {
+function validateInputRegex(inputEl, regex) {
+    if (!inputEl || !(inputEl instanceof HTMLInputElement)) {
         console.error('Invalid input element provided for regex validation.');
         return false;
     }
@@ -415,55 +443,67 @@ function validateInputRegex(input, regex) {
         return false;
     }
 
-    input.addEventListener('input', function () {
-        if (regex.test(input.value)) {
-            input.classList.remove('is-invalid');
-            input.classList.add('is-valid');
+    inputEl.addEventListener('input', function () {
+        if (regex.test(inputEl.value)) {
+            inputEl.classList.remove('is-invalid');
+            inputEl.classList.add('is-valid');
         } else {
-            input.classList.remove('is-valid');
-            input.classList.add('is-invalid');
+            inputEl.classList.remove('is-valid');
+            inputEl.classList.add('is-invalid');
         }
     });
-    input.addEventListener('blur', function () {
-        input.dispatchEvent(new Event('input'));
+    inputEl.addEventListener('blur', function () {
+        inputEl.dispatchEvent(new Event('input'));
     });
 }
 
 function getCookie(name) {
-    /** only if django HTTPONLY cookie setting is false */
-    let cookieValue = null;
-    if (document.cookie && document.cookie !== '') {
-        const cookies = document.cookie.split(';');
-        for (let i = 0; i < cookies.length; i++) {
-            const cookie = cookies[i].trim();
-            // Check if this cookie string begins with the name we want
-            if (cookie.substring(0, name.length + 1) === (name + '=')) {
-                cookieValue = decodeURIComponent(cookie.substring(name.length + 1));
-                break;
-            }
-        }
-    }
-    return cookieValue;
+    if (!document.cookie) return null;
+
+    return document.cookie
+        .split(';')
+        .map(c => c.trim())
+        .find(c => c.startsWith(`${name}=`))
+        ?.split('=')[1]
+        ?.replace(/^"+|"+$/g, '')
+        ?? null;
 }
 
 
 const getCSRFToken = (() => {
     let cachedToken = null;
+
     return () => {
+        // Return cached value if available
         if (cachedToken) return cachedToken;
 
-        const input = document.querySelector('[name=csrfmiddlewaretoken]');
-        if (input?.value) {
+        // 1. Look for hidden input
+        const input = document.querySelector('input[name="csrfmiddlewaretoken"]');
+        if (input && input.value) {
             cachedToken = input.value;
             return cachedToken;
         }
 
+        // 2. Look for <meta name="csrf-token" content="...">
         const meta = document.querySelector('meta[name="csrf-token"]');
-        cachedToken = meta ? meta.getAttribute('content') : null;
-        return cachedToken;
+        if (meta && meta.content) {
+            cachedToken = meta.content;
+            return cachedToken;
+        }
+
+        // 3. Look for CSRF cookie (if not HttpOnly)
+        const cookieToken = getCookie('csrftoken');
+        if (cookieToken) {
+            cachedToken = cookieToken;
+            return cachedToken;
+        }
+        else {
+            console.warn('[CSRF] Token not found in DOM input, meta, or cookies.');
+            return null;
+        }
+
     };
 })();
-
 
 
 
@@ -486,62 +526,61 @@ async function fetchWithCSRF(url, options = {}) {
 }
 
 
-function serializeForm(form) {
-    const formData = new FormData(form);
-    const serialized = {};
-    for (const [key, value] of formData.entries()) {
-        if (serialized.hasOwnProperty(key)) {
-            // If the key already exists, convert it to an array
-            if (!Array.isArray(serialized[key])) {
-                serialized[key] = [serialized[key]];
-            }
-            serialized[key].push(value);
+function serializeForm(form, { asJSON = false } = {}) {
+    if (!(form instanceof HTMLFormElement)) {
+        console.error("serializeForm: provided element is not a form.");
+        return asJSON ? '{}' : {};
+    }
+
+    const serialized = [...new FormData(form).entries()].reduce((acc, [key, value]) => {
+        if (key in acc) {
+            if (!Array.isArray(acc[key])) acc[key] = [acc[key]];
+            acc[key].push(value);
         } else {
-            serialized[key] = value;
+            acc[key] = value;
+        }
+        return acc;
+    }, {});
+
+    return asJSON ? JSON.stringify(serialized) : serialized;
+}
+
+const URLHelpers = {
+    getQueryParam(param) {
+        const urlParams = new URLSearchParams(window.location.search);
+        return urlParams.get(param);
+    },
+
+    setQueryParam(param, value) {
+        const urlParams = new URLSearchParams(window.location.search);
+        if (value === null || value === undefined) {
+            urlParams.delete(param);
+        } else {
+            urlParams.set(param, value);
+        }
+        const newUrl = `${window.location.pathname}?${urlParams.toString()}`;
+        window.history.pushState({}, '', newUrl);
+    },
+
+    removeQueryParam(param) {
+        const urlParams = new URLSearchParams(window.location.search);
+        urlParams.delete(param);
+        const newUrl = `${window.location.pathname}?${urlParams.toString()}`;
+        window.history.pushState({}, '', newUrl);
+    },
+
+    getCurrentUrl() {
+        return window.location.href;
+    },
+
+    setCurrentUrl(url) {
+        if (url) {
+            window.history.pushState({}, '', url);
+        } else {
+            console.warn('Invalid URL provided to setCurrentUrl.');
         }
     }
-    return serialized;
-}
-
-
-function getQueryParam(param) {
-    const urlParams = new URLSearchParams(window.location.search);
-    return urlParams.get(param);
-}
-
-
-function setQueryParam(param, value) {
-    const urlParams = new URLSearchParams(window.location.search);
-    if (value === null || value === undefined) {
-        urlParams.delete(param);
-    } else {
-        urlParams.set(param, value);
-    }
-    const newUrl = `${window.location.pathname}?${urlParams.toString()}`;
-    window.history.pushState({}, '', newUrl);
-}
-
-
-function removeQueryParam(param) {
-    const urlParams = new URLSearchParams(window.location.search);
-    urlParams.delete(param);
-    const newUrl = `${window.location.pathname}?${urlParams.toString()}`;
-    window.history.pushState({}, '', newUrl);
-}
-
-
-function getCurrentUrl() {
-    return window.location.href;
-}
-
-
-function setCurrentUrl(url) {
-    if (url) {
-        window.history.pushState({}, '', url);
-    } else {
-        console.warn('Invalid URL provided to setCurrentUrl.');
-    }
-}
+};
 
 
 
@@ -552,80 +591,64 @@ function isCSRFTokenAvailable() {
 
 
 
-function preserveScrollPos(behavior = 'instant', offset = 0) {
-    if (behavior !== 'instant' && behavior !== 'smooth' && behavior !== 'auto') {
-        // If an invalid behavior is specified, default to 'instant'
-        console.warn('Invalid behavior specified. Defaulting to "instant".');
-        behavior = 'instant';
-    }
+const ScrollHelpers = {
+    _validateBehavior(behavior) {
+        if (['instant', 'smooth', 'auto'].includes(behavior)) return behavior;
+        console.warn('Invalid scroll behavior specified. Defaulting to "instant".');
+        return 'instant';
+    },
 
-    offset = parseInt(offset, 10) || 0; // Ensure offset is a number
-    const savedScrollPosition = localStorage.getItem('currentScrollPos');
+    preserveScrollPos(behavior = 'instant', offset = 0) {
+        behavior = this._validateBehavior(behavior);
+        offset = parseInt(offset, 10) || 0;
 
+        const savedScrollPosition = localStorage.getItem('currentScrollPos');
+        if (savedScrollPosition !== null) {
+            window.scrollTo({
+                top: Math.max(0, parseInt(savedScrollPosition, 10)) + offset,
+                behavior
+            });
+            localStorage.removeItem('currentScrollPos');
+        }
 
-    if (savedScrollPosition !== null) {
+        document.addEventListener('scroll', () => {
+            const adjustedScroll = Math.max(0, window.scrollY);
+            localStorage.setItem('currentScrollPos', adjustedScroll);
+        });
+    },
+
+    scrollToTop(behavior = 'instant', offset = 0) {
+        behavior = this._validateBehavior(behavior);
+        offset = parseInt(offset, 10) || 0;
+
         window.scrollTo({
-            top: Math.max(0, parseInt(savedScrollPosition, 10)) + offset, // Ensure non-negative value and apply offset
-            behavior: behavior
+            top: 0 + offset,
+            behavior
         });
-        localStorage.removeItem('currentScrollPos'); // Clear after use
-    }
+    },
 
-    document.addEventListener('scroll', function () {
-        const adjustedScroll = Math.max(0, window.scrollY); // Ensure non-negative value
-        localStorage.setItem('currentScrollPos', adjustedScroll);
-    });
-}
+    scrollToBottom(behavior = 'instant') {
+        behavior = this._validateBehavior(behavior);
 
-
-function scrollToTop(behavior = 'instant', offset = 0) {
-    if (behavior !== 'instant' && behavior !== 'smooth' && behavior !== 'auto') {
-        // If an invalid behavior is specified, default to 'instant'
-        console.warn('Invalid behavior specified. Defaulting to "instant".');
-        behavior = 'instant';
-    }
-
-    offset = parseInt(offset, 10) || 0; // Ensure offset is a number
-
-    window.scrollTo({
-        top: 0 + offset, // Add offset to the top position
-        behavior: 'smooth'
-    });
-}
-
-
-
-function scrollToElementById(elementId, behavior = 'instant') {
-    if (behavior !== 'instant' && behavior !== 'smooth' && behavior !== 'auto') {
-        // If an invalid behavior is specified, default to 'instant'
-        console.warn('Invalid behavior specified. Defaulting to "instant".');
-        behavior = 'instant';
-    }
-    const element = document.getElementById(elementId);
-    if (element) {
-        element.scrollIntoView({
-            behavior: behavior,
-            block: 'start'
+        window.scrollTo({
+            top: document.body.scrollHeight,
+            behavior
         });
-    } else {
-        console.warn(`Element with ID ${elementId} not found.`);
+    },
+
+    scrollToElement(element, behavior = 'instant') {
+        behavior = this._validateBehavior(behavior);
+
+        if (element) {
+            element.scrollIntoView({
+                behavior,
+                block: 'start'
+            });
+        } else {
+            console.warn(`[scrollToElement] Element not found.`);
+        }
     }
-}
-
-
-
-function scrollToBottom(behavior = 'instant') {
-    if (behavior !== 'instant' && behavior !== 'smooth' && behavior !== 'auto') {
-        // If an invalid behavior is specified, default to 'instant'
-        console.warn('Invalid behavior specified. Defaulting to "instant".');
-        behavior = 'instant';
-    }
-    window.scrollTo({
-        top: document.body.scrollHeight,
-        behavior: behavior
-    });
-}
-
+};
 
 
 
@@ -686,8 +709,12 @@ function printSection({ sectionSelector, hideSelectors = [], watermarkSelector =
 }
 
 
-// Throttle function
+
 function throttle(func, limit) {
+    /*
+    execute a function at most once every limit milliseconds.
+    example : window.addEventListener('scroll', throttle(logScroll, 500));
+    */
     let inThrottle;
     return function (...args) {
         if (!inThrottle) {
@@ -714,3 +741,55 @@ function generateId(prefix = '') {
 function wait(ms) {
     return new Promise(resolve => setTimeout(resolve, ms));
 }
+
+
+
+function safeGetElementById(id, context = document) {
+    const el = context.getElementById(id);
+    if (!el) {
+        throw new Error(`Element with ID "${id}" not found`);
+    }
+    return el;
+}
+
+
+const StorageHelpers = {
+    get(key, defaultValue = null, useSession = false) {
+        const store = useSession ? sessionStorage : localStorage;
+        try {
+            const item = store.getItem(key);
+            return item ? JSON.parse(item) : defaultValue;
+        } catch (e) {
+            console.warn(`[Storage] Failed to parse item: ${key}`, e);
+            return defaultValue;
+        }
+    },
+
+    set(key, value, useSession = false) {
+        const store = useSession ? sessionStorage : localStorage;
+        try {
+            store.setItem(key, JSON.stringify(value));
+            return true;
+        } catch (e) {
+            console.error(`[Storage] Failed to set item: ${key}`, e);
+            return false;
+        }
+    },
+
+    remove(key, useSession = false) {
+        const store = useSession ? sessionStorage : localStorage;
+        try {
+            store.removeItem(key);
+            return true;
+        } catch (e) {
+            console.error(`[Storage] Failed to remove item: ${key}`, e);
+            return false;
+        }
+    },
+
+    exists(key, useSession = false) {
+        const store = useSession ? sessionStorage : localStorage;
+        return store.getItem(key) !== null;
+    }
+};
+
