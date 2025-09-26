@@ -13,6 +13,7 @@ export const Forms = {
     serializeForm,
     disableForm,
     formParser,
+    objectContainsFile
 };
 
 export const Cookies = {
@@ -60,6 +61,8 @@ export const Utils = {
 
 
 /*========================================================= functions ==================================================*/
+
+
 /**
  * Safe fetch wrapper with retry logic and timeout
  * @param {string} url - The URL to fetch
@@ -133,33 +136,26 @@ async function safeFetch(url, options = {}, { autoJSON = true, retries = 0, time
 
 
 /**
- * formParser(form)
- * @param {HTMLFormElement|Object} input - A form element or plain object
- * @returns {FormData|Object} - FormData if files exist, otherwise plain object
+ * Parse a form element or plain object into either FormData (if files exist) or plain object (JSON-ready)
+ * 
+ * Usage:
+ * const form = document.querySelector("#myForm");
+ * const parsed = formParser(form);
+ *
+ * if (parsed instanceof FormData) {
+ *   fetch("/api", { 
+ *     method: "POST", 
+ *     body: parsed 
+ *   });
+ * } else {
+ *   fetch("/api", {
+ *     method: "POST",
+ *     headers: { "Content-Type": "application/json" },
+ *     body: JSON.stringify(parsed)
+ *   });
+ * }
  */
 function formParser(form) {
-    /**
-     * 
-     * Usage: 
-        const form = document.querySelector("#myForm");
-        const parsed = formParser(form);
-
-        if (parsed instanceof FormData) {
-        fetch("/api", { 
-        method: "POST", 
-        headers: { "Content-Type": "multipart/form-data" },
-        body: parsed 
-        });
-        
-        } else {
-        fetch("/api", {
-            method: "POST",
-            headers: { "Content-Type": "application/json" },
-            body: JSON.stringify(parsed)
-        });
-        }
-
-    */
   let dataObj;
 
   if (form instanceof HTMLFormElement) {
@@ -170,29 +166,13 @@ function formParser(form) {
     throw new Error("formParser expects a form element or an object");
   }
 
-  // Helper to detect files
-  function containsFile(val) {
-    if (val instanceof File || val instanceof Blob) return true;
-    if (val instanceof FileList && val.length > 0) return true;
-    if (val instanceof FormData) {
-      for (const value of val.values()) {
-        if (containsFile(value)) return true;
-      }
-      return false;
-    }
-    if (typeof val === "object" && val !== null) {
-      return Object.values(val).some(containsFile);
-    }
-    return false;
-  }
-
-  // If it's FormData, check if any value is a file
+  // If it's already FormData, just return it
   if (dataObj instanceof FormData) {
-    return dataObj; // already FormData, browser handles files automatically
+    return dataObj;
   }
 
-  // Plain object with files → convert to FormData
-  if (containsFile(dataObj)) {
+  // If object contains any file/blob, convert to FormData
+  if (objectContainsFile(dataObj)) {
     const fd = new FormData();
     Object.entries(dataObj).forEach(([key, value]) => {
       if (value instanceof FileList) {
@@ -204,8 +184,49 @@ function formParser(form) {
     return fd;
   }
 
-  // Text-only object → return as-is (ready for JSON)
+  // Text-only object → return as-is
   return dataObj;
+}
+
+
+/**
+ * Check if a value or object contains any File, Blob, or FileList.
+ * 
+ * This is useful when deciding whether to send data as JSON or
+ * multipart/form-data in a fetch request.
+ *
+ * Usage:
+ *   - Pass a JS object, FormData, or any value.
+ *   - Returns `true` if any part of the object is a File/Blob/FileList.
+ *   - Returns `false` for text-only data or empty objects.
+ *
+ * @param {*} obj - The value to inspect. Can be:
+ *   - Plain JS object: { username: "alice", avatar: File }
+ *   - FormData instance
+ *   - File, Blob, FileList
+ *   - Nested objects containing files
+ * @returns {boolean} - `true` if the value contains any binary files, `false` otherwise.
+ *
+ * Examples:
+ * objectContainsFile({ username: "alice" });               // false
+ * objectContainsFile({ avatar: fileInput.files[0] });      // true
+ * objectContainsFile(new FormData(form));                  // true if form has file inputs
+ * objectContainsFile(fileInput.files);                     // true if non-empty FileList
+ * objectContainsFile(null);                                // false
+ */
+function objectContainsFile(obj) {
+    if (obj instanceof File || obj instanceof Blob) return true;
+    if (obj instanceof FileList && obj.length > 0) return true;
+    if (obj instanceof FormData) {
+        for (const value of obj.values()) {
+            if (containsFile(value)) return true;
+        }
+        return false;
+    }
+    if (typeof obj === "object" && obj !== null) {
+        return Object.values(obj).some(containsFile);
+    }
+    return false; // primitives, null, undefined, etc.
 }
 
 
@@ -216,35 +237,31 @@ function disableForm(form, state = true) {
 
 
 
-function toggleClass(elementId, className) {
+function toggleClass(element, className) {
     try {
-        const el = document.getElementById(elementId);
-        el.classList.toggle(className);
+        element.classList.toggle(className);
     } catch (error) {
         console.error(error.message);
     }
 }
 
-function showElement(elementId) {
-    const el = document.getElementById(elementId);
-    if (el) el.style.display = '';
+function showElement(element) {
+    if (element) el.style.display = '';
 }
-function hideElement(elementId) {
-    const el = document.getElementById(elementId);
-    if (el) el.style.display = 'none';
+function hideElement(element) {
+    if (element) el.style.display = 'none';
 }
 
 
-async function copyElementText(elementId) {
-    const el = document.getElementById(elementId);
-    if (!el) {
-        console.error(`Element with ID "${elementId}" not found.`);
+async function copyElementText(element) {
+    if (!element) {
+        console.error(`[copyElementText] Element not found.`);
         return false;
     }
 
-    const text = el.textContent || el.innerText;
+    const text = element.textContent || element.innerText;
     if (!text) {
-        console.error(`Element with ID "${elementId}" has no text content to copy.`);
+        console.error(`[copyElementText] Element has no text content to copy.`);
         return false;
     }
 
@@ -333,8 +350,6 @@ function shareLinkSocialMedia(platform, url, text = '', hashtags = '') {
     // Open the share URL in a new window
     window.open(shareUrl, '_blank', 'width=600,height=400');
 }
-
-
 
 
 function waitForDomReady() {
