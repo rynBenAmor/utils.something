@@ -12,6 +12,7 @@ export const Forms = {
     togglePasswordVisibility,
     serializeForm,
     disableForm,
+    formParser,
 };
 
 export const Cookies = {
@@ -52,7 +53,8 @@ export const Utils = {
     throttle,
     generateId,
     deepClone,
-    wait
+    wait,
+    isURL
 };
 
 
@@ -95,6 +97,7 @@ async function safeFetch(url, options = {}, { autoJSON = true, retries = 0, time
     };
 
     if (autoJSON && opts.body && typeof opts.body === "object" && !(opts.body instanceof FormData)) {
+        // do nothing if multipart or primitives
         opts.headers["Content-Type"] = "application/json";
         opts.body = JSON.stringify(opts.body);
     }
@@ -126,6 +129,83 @@ async function safeFetch(url, options = {}, { autoJSON = true, retries = 0, time
             return [err, null];
         }
     }
+}
+
+
+/**
+ * formParser(form)
+ * @param {HTMLFormElement|Object} input - A form element or plain object
+ * @returns {FormData|Object} - FormData if files exist, otherwise plain object
+ */
+function formParser(form) {
+    /**
+     * 
+     * Usage: 
+        const form = document.querySelector("#myForm");
+        const parsed = formParser(form);
+
+        if (parsed instanceof FormData) {
+        fetch("/api", { 
+        method: "POST", 
+        headers: { "Content-Type": "multipart/form-data" },
+        body: parsed 
+        });
+        
+        } else {
+        fetch("/api", {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify(parsed)
+        });
+        }
+
+    */
+  let dataObj;
+
+  if (form instanceof HTMLFormElement) {
+    dataObj = new FormData(form);
+  } else if (typeof form === "object" && form !== null) {
+    dataObj = form;
+  } else {
+    throw new Error("formParser expects a form element or an object");
+  }
+
+  // Helper to detect files
+  function containsFile(val) {
+    if (val instanceof File || val instanceof Blob) return true;
+    if (val instanceof FileList && val.length > 0) return true;
+    if (val instanceof FormData) {
+      for (const value of val.values()) {
+        if (containsFile(value)) return true;
+      }
+      return false;
+    }
+    if (typeof val === "object" && val !== null) {
+      return Object.values(val).some(containsFile);
+    }
+    return false;
+  }
+
+  // If it's FormData, check if any value is a file
+  if (dataObj instanceof FormData) {
+    return dataObj; // already FormData, browser handles files automatically
+  }
+
+  // Plain object with files → convert to FormData
+  if (containsFile(dataObj)) {
+    const fd = new FormData();
+    Object.entries(dataObj).forEach(([key, value]) => {
+      if (value instanceof FileList) {
+        Array.from(value).forEach(f => fd.append(key, f));
+      } else {
+        fd.append(key, value);
+      }
+    });
+    return fd;
+  }
+
+  // Text-only object → return as-is (ready for JSON)
+  return dataObj;
 }
 
 
@@ -793,3 +873,13 @@ const StorageHelpers = {
     }
 };
 
+function isURL(str) {
+    const pattern = new RegExp(`^((ft|htt)ps?:\\/\\/)?` + // protocol
+        `((([a-z\\d]([a-z\\d-]*[a-z\\d])*)\\.)+[a-z]{2,}|` + // domain name and extension
+        `((\\d{1,3}\\.){3}\\d{1,3}))` + // OR ip (v4) address
+        `(\\:\\d+)?` + // port
+        `(\\/[-a-z\\d%@_.~+&:]*)*` + // path
+        `(\\?[;&a-z\\d%@_.,~+&:=-]*)?` + // query string
+        `(\\#[-a-z\\d_]*)?$`, `i`); // fragment locator
+    return pattern.test(str);
+}
