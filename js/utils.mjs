@@ -3,6 +3,11 @@
 export const AJAX = {
     fetchWithCSRF,
     safeFetch,
+    checkMultipartBinary,
+    createHeaders,
+    normalizeError,
+    getResponseType,
+    safelyReadResponse,
 };
 
 export const Forms = {
@@ -26,6 +31,9 @@ export const Cookies = {
 export const URLUtils = {
     URLHelpers,
     shareLinkSocialMedia,
+    buildQuery,
+    isURL,
+
 };
 
 export const UI = {
@@ -72,20 +80,19 @@ export const Utils = {
  * @param {number} config.retries - Number of retry attempts
  * @param {number} config.timeout - Request timeout in ms
  * @returns {Promise<[Error|null, any]>} Tuple of error and data
+ * 
+ * safeFetch(url, options = {}, { retries = 0, timeout = 0, autoJSON = true })
+ * 
+ * - Auto JSON parsing (falls back to text if not JSON)
+ * - Throws on non-OK responses (returns Error with err.status & err.data)
+ * - Optional retries + timeout (AbortController)
+ * - Returns [err, data] instead of try/catch
+ * 
+ * @example
+ * const [err, data] = await safeFetch('/api/items', { method: 'POST', body: { name: 'Test' } }, { retries: 3, timeout: 5000 });
+ * if (err) console.warn(`Error ${err.status}:`, err.data);
  */
 async function safeFetch(url, options = {}, { autoJSON = true, retries = 0, timeout = 0 } = {}) {
-    /*
-    * safeFetch(url, options = {}, { retries = 0, timeout = 0, autoJSON = true })
-    * 
-    * - Auto JSON parsing (falls back to text if not JSON)
-    * - Throws on non-OK responses (returns Error with err.status & err.data)
-    * - Optional retries + timeout (AbortController)
-    * - Returns [err, data] instead of try/catch
-    *
-    * Example:
-    * const [err, data] = await safeFetch('/api/items', { method: 'POST', body: { name: 'Test' } }, { retries: 3, timeout: 5000 });
-    * if (err) console.warn(`Error ${err.status}:`, err.data);
-    */
 
     const controller = new AbortController();
     const id = timeout ? setTimeout(() => controller.abort(), timeout) : null;
@@ -136,9 +143,12 @@ async function safeFetch(url, options = {}, { autoJSON = true, retries = 0, time
 
 
 /**
- * Parse a form element or plain object into either FormData (if files exist) or plain object (JSON-ready)
+ * Parse a form element or plain object into a network-ready payload:
+ * - Returns FormData if any file inputs exist.
+ * - Returns JSON string otherwise (if autoJson = true).
+ * - Returns plain object otherwise (if autoJson = false).
  * 
- * Usage:
+ * @example
  * const form = document.querySelector("#myForm");
  * const parsed = formParser(form);
  *
@@ -155,38 +165,39 @@ async function safeFetch(url, options = {}, { autoJSON = true, retries = 0, time
  *   });
  * }
  */
-function formParser(form) {
-  let dataObj;
+function formParser(form, autoJson = true) {
+    let dataObj;
 
-  if (form instanceof HTMLFormElement) {
-    dataObj = new FormData(form);
-  } else if (typeof form === "object" && form !== null) {
-    dataObj = form;
-  } else {
-    throw new Error("formParser expects a form element or an object");
-  }
+    if (form instanceof HTMLFormElement) {
+        dataObj = new FormData(form);
+    } else if (typeof form === "object" && form !== null) {
+        dataObj = form;
+    } else {
+        throw new Error("formParser expects a form element or a plain object");
+    }
 
-  // If it's already FormData, just return it
-  if (dataObj instanceof FormData) {
-    return dataObj;
-  }
+    // If it's already FormData, just return it
+    if (dataObj instanceof FormData) {
+        return dataObj;
+    }
 
-  // If object contains any file/blob, convert to FormData
-  if (objectContainsFile(dataObj)) {
-    const fd = new FormData();
-    Object.entries(dataObj).forEach(([key, value]) => {
-      if (value instanceof FileList) {
-        Array.from(value).forEach(f => fd.append(key, f));
-      } else {
-        fd.append(key, value);
-      }
-    });
-    return fd;
-  }
+    // If object contains any file/blob, convert to FormData
+    if (objectContainsFile(dataObj)) {
+        const fd = new FormData();
+        Object.entries(dataObj).forEach(([key, value]) => {
+            if (value instanceof FileList) {
+                Array.from(value).forEach(f => fd.append(key, f));
+            } else {
+                fd.append(key, value);
+            }
+        });
+        return fd;
+    }
 
-  // Text-only object → return as-is
-  return dataObj;
+    // Text-only object → return JSON string (default) or raw object
+    return autoJson ? JSON.stringify(dataObj) : dataObj;
 }
+
 
 
 /**
@@ -207,7 +218,7 @@ function formParser(form) {
  *   - Nested objects containing files
  * @returns {boolean} - `true` if the value contains any binary files, `false` otherwise.
  *
- * Examples:
+ * @example
  * objectContainsFile({ username: "alice" });               // false
  * objectContainsFile({ avatar: fileInput.files[0] });      // true
  * objectContainsFile(new FormData(form));                  // true if form has file inputs
@@ -228,6 +239,288 @@ function objectContainsFile(obj) {
     }
     return false; // primitives, null, undefined, etc.
 }
+
+
+/**
+ * Infers the most appropriate response type from a Fetch API Response's Content-Type header.
+ *
+ * @function getResponseType
+ * @param {Response} response - A Fetch API Response object.
+ * @returns {"json"|"text"|"multipart"|"blob"|"unknown"} -
+ *   A string describing the suggested response handler:
+ *   - `"json"` → for `application/json`
+ *   - `"text"` → for any `text/*` type
+ *   - `"multipart"` → for `multipart/*` types (e.g., form-data, mixed)
+ *   - `"blob"` → for binary types like `application/octet-stream`, `image/*`, `audio/*`, `video/*`, `application/pdf`
+ *   - `"unknown"` → if the content type cannot be categorized
+ *
+ * @example
+ * const response = await fetch("/api/data");
+ * const type = getResponseType(response);
+ *
+ * switch (type) {
+ *   case "json":
+ *     const jsonData = await response.json();
+ *     break;
+ *   case "text":
+ *     const textData = await response.text();
+ *     break;
+ *   case "blob":
+ *     const blobData = await response.blob();
+ *     break;
+ *   case "multipart":
+ *     // handle multipart parsing separately
+ *     break;
+ *   default:
+ *     console.warn("Unknown response type");
+ * }
+ */
+function getResponseType(response) {
+  const contentType = (response.headers.get("Content-Type") || "").toLowerCase();
+
+  if (contentType.includes("application/json")) return "json";
+  if (contentType.startsWith("text/")) return "text";
+  if (contentType.startsWith("multipart/")) return "multipart";
+  if (
+    contentType.includes("application/octet-stream") ||
+    contentType.startsWith("image/") ||
+    contentType.startsWith("audio/") ||
+    contentType.startsWith("video/") ||
+    contentType.includes("application/pdf")
+  ) {
+    return "blob";
+  }
+
+  return "unknown";
+}
+
+
+
+/**
+ * Safely reads a Fetch API Response by inferring the appropriate method from its Content-Type.
+ *
+ * @async
+ * @function safelyReadResponse
+ * @param {Response} response - A Fetch API Response object.
+ * @returns {Promise<any>} The parsed response body:
+ *   - `Object` (parsed JSON) if Content-Type is `application/json`
+ *   - `string` if Content-Type is `text/*`
+ *   - `Blob` if Content-Type suggests binary (`image/*`, `video/*`, `application/pdf`, etc.)
+ *   - `string` (raw) if Content-Type is `multipart/*`
+ *   - `ArrayBuffer` as a fallback for unknown types
+ *
+ * @description
+ * Uses {@link getResponseType} to choose the correct method (`json`, `text`, `blob`, or `arrayBuffer`)
+ * for reading a Fetch API response. Clones the response internally so the original
+ * Response object remains usable if needed elsewhere.
+ *
+ * @example
+ * const response = await fetch("/api/data");
+ * const data = await safelyReadResponse(response);
+ *
+ * if (data instanceof Blob) {
+ *   // Handle binary (e.g. download, preview, upload)
+ * } else if (typeof data === "string") {
+ *   // Handle text/multipart
+ * } else if (typeof data === "object") {
+ *   // Likely JSON
+ * }
+ */
+async function safelyReadResponse(response) {
+  const type = getResponseType(response);
+  const clone = response.clone();
+
+  switch (type) {
+    case "json":
+      return await clone.json();
+    case "text":
+      return await clone.text();
+    case "blob":
+      return await clone.blob();
+    case "multipart":
+      // return raw text for further parsing
+      return await clone.text();
+    default:
+      // last-resort fallback
+      return await clone.arrayBuffer();
+  }
+}
+
+
+/**
+ * Normalizes different error types (HTTP Response or standard JS Error) 
+ * into a consistent object shape.
+ *
+ * @async
+ * @function normalizeError
+ * @param {any} error - The error to normalize. Can be a `Response`, `Error`, or unknown value.
+ * @returns {Promise<Object>} A normalized error object:
+ *   - For HTTP Response errors:
+ *     { type: "http", status: number, statusText: string, url: string, body?: any }
+ *   - For JS Errors:
+ *     { type: "js", message: string, stack?: string }
+ *   - For unknown values:
+ *     { type: "unknown", value: any }
+ *
+ * @example
+ * try {
+ *   const res = await fetch("/api/fail");
+ *   if (!res.ok) throw res;
+ * } catch (err) {
+ *   const normalized = await normalizeError(err);
+ *   console.error(normalized);
+ * }
+ */
+async function normalizeError(error) {
+  if (error instanceof Response) {
+    let body;
+    try {
+      // Try to parse JSON body if available
+      const clone = error.clone();
+      body = await clone.json().catch(() => clone.text());
+    } catch {
+      body = null;
+    }
+    return {
+      type: "http",
+      status: error.status,
+      statusText: error.statusText || "",
+      url: error.url,
+      body,
+    };
+  }
+
+  if (error instanceof Error) {
+    return {
+      type: "js",
+      message: error.message || "Unknown error",
+      stack: error.stack,
+    };
+  }
+
+  return {
+    type: "unknown",
+    value: error,
+  };
+}
+
+
+/**
+ * Creates a Headers object with sensible defaults for JSON APIs and optional auth.
+ *
+ * @function createHeaders
+ * @param {Object} [options={}] - Configuration options.
+ * @param {boolean} [options.isJson=true] - Whether to set `Content-Type: application/json`.
+ * @param {string|null} [options.token=null] - Bearer token for `Authorization` header.
+ * @param {Record<string,string>} [options.extra={}] - Additional headers to include or override.
+ * @returns {Headers} A Fetch API Headers object.
+ *
+ * @example
+ * // JSON + Authorization
+ * const headers = createHeaders({ token: "abc123" });
+ * 
+ * // Custom headers
+ * const headers = createHeaders({ 
+ *   isJson: false, 
+ *   extra: { "X-Client": "my-app" } 
+ * });
+ *
+ * fetch("/api/data", { headers });
+ */
+function createHeaders({ isJson = true, token = null, extra = {} } = {}) {
+  const headers = new Headers();
+
+  if (isJson && !extra["Content-Type"]) {
+    headers.set("Content-Type", "application/json");
+  }
+
+  if (token) {
+    headers.set("Authorization", `Bearer ${token}`);
+  }
+
+  for (const [key, value] of Object.entries(extra)) {
+    headers.set(key, value);
+  }
+
+  return headers;
+}
+
+
+
+
+/*
+@example
+const params = { search: "query", page: 2 };
+const queryString = buildQuery(params);
+// Result: "search=query&page=2"
+*/
+function buildQuery(params = {}) {
+  return new URLSearchParams(params).toString();
+}
+
+
+
+
+
+/**
+ * Checks if a Fetch API Response is multipart and whether it contains binary data.
+ *
+ * @async
+ * @function checkMultipartBinary
+ * @param {Response} response - A Fetch API Response object to inspect.
+ * @returns {Promise<Object>} An object with the following properties:
+ *   @property {boolean} isMultipart - True if the response has a multipart Content-Type.
+ *   @property {boolean} isBinary - True if the multipart body appears to contain binary data
+ *     (any non-text/non-JSON type with nonzero size).
+ *   @property {Blob|null} blob - A Blob copy of the response body (if multipart), otherwise null.
+ *
+ * @description
+ * This function inspects the Content-Type header of a response to determine if it is multipart.
+ * If multipart, it clones the response and reads the body as a Blob so that the original response
+ * stream remains available for further processing. The blob type is checked to decide whether the
+ * content is likely binary (e.g., `application/octet-stream`, images, PDFs).
+ *
+ * Note: This does **not** parse multipart boundaries or inspect individual parts; it only provides
+ * a coarse check on the overall response payload.
+ *
+ * @example
+ * const response = await fetch("/api/download");
+ * const result = await checkMultipartBinary(response);
+ *
+ * if (result.isMultipart && result.isBinary) {
+ *   // Handle binary multipart response
+ *   const fileBlob = result.blob;
+ *   // e.g., download, preview, or parse
+ * } else {
+ *   // Handle as normal JSON/text
+ *   const data = await response.json();
+ * }
+ */
+async function checkMultipartBinary(response) {
+    const contentType = response.headers.get("Content-Type");
+
+    if (contentType && contentType.startsWith("multipart/")) {
+        console.log("Response is multipart");
+
+        // Clone to avoid consuming the original response body
+        const blob = await response.clone().blob();
+
+        // More robust binary check
+        const isBinary = !/^text\/|application\/json/.test(blob.type) && blob.size > 0;
+
+        console.log(
+            isBinary
+                ? "Response contains binary data"
+                : "Response is multipart but not binary"
+        );
+
+        return { isMultipart: true, isBinary, blob };
+    }
+
+    console.log("Response is not multipart");
+    return { isMultipart: false, isBinary: false, blob: null };
+}
+
 
 
 
